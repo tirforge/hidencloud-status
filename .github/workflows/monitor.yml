@@ -93,8 +93,12 @@ jobs:
           if s.get('healthy'):
               print('healthy, no alert'); raise SystemExit
           msg = '🚨 HidenCloud watchdog: UNHEALTHY\n' + '\n'.join('• ' + r for r in s.get('reasons', [])) + f"\nchecked {s.get('checked_at')}"
-          urllib.request.urlopen(urllib.request.Request(
-              f'https://api.telegram.org/bot{tok}/sendMessage',
-              data=urllib.parse.urlencode({'chat_id': chat, 'text': msg}).encode()), timeout=30)
-          print('alert sent')
+          try:
+              urllib.request.urlopen(urllib.request.Request(
+                  f'https://api.telegram.org/bot{tok}/sendMessage',
+                  data=urllib.parse.urlencode({'chat_id': chat, 'text': msg}).encode()), timeout=30)
+              print('alert sent')
+          except Exception as e:
+              # alerting must never fail the watchdog run (e.g. chat never pressed START)
+              print(f'::warning::telegram alert failed: {type(e).__name__} — press START on the bot')
           EOF
