@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HidenCloud Watchdog</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:640px;margin:2rem auto;padding:0 1rem;color:#1a1a1a}
+  .pill{display:inline-block;padding:.4rem 1rem;border-radius:999px;font-weight:700;color:#fff}
+  .ok{background:#1a7f37}.bad{background:#cf222e}.warn{background:#9a6700}
+  .card{border:1px solid #ddd;border-radius:12px;padding:1rem;margin:1rem 0}
+  .muted{color:#666;font-size:.9rem}
+  table{width:100%;border-collapse:collapse}td,th{border-bottom:1px solid #eee;padding:.4rem;text-align:left}
+</style>
+</head>
+<body>
+<h1>🐕 HidenCloud Watchdog</h1>
+<p class="muted">Read-only status. No secrets live on this page — ever.</p>
+<div id="app">Loading…</div>
+<script>
+fetch('status.json').then(r=>r.json()).then(s=>{
+  const pill = s.healthy ? '<span class="pill ok">HEALTHY</span>'
+    : (s.login_ok ? '<span class="pill warn">ATTENTION</span>' : '<span class="pill bad">DOWN</span>');
+  let rows = (s.services||[]).map(v=>`<tr><td><code>${v.id}</code></td><td>${v.days_left??'?'}</td><td>${v.renewable?'yes':'no'}</td><td>${(v.flags||[]).join(', ')||'—'}</td></tr>`).join('');
+  let rw = (s.renew||{});
+  document.getElementById('app').innerHTML = `
+    <p>${pill} <span class="muted">checked ${s.checked_at||'?'}</span></p>
+    <div class="card"><h3>Login</h3><p>${s.login_ok?'✅ cookie valid':'❌ '+((s.reasons||[])[0]||'failed')}</p></div>
+    <div class="card"><h3>Services (${(s.services||[]).length})</h3>
+      <table><tr><th>ID</th><th>Days left</th><th>Renewable</th><th>Flags</th></tr>${rows||'<tr><td colspan=4>none</td></tr>'}</table></div>
+    <div class="card"><h3>Renew workflow</h3><p>Last run: ${rw.conclusion||'?'} <span class="muted">(${rw.created_at||'?'})</span><br>Next cron: <code>${rw.next_cron||'?'}</code></p></div>
+    ${(s.reasons||[]).length?`<div class="card"><h3>⚠️ Reasons</h3><ul>${s.reasons.map(r=>`<li>${r}</li>`).join('')}</ul></div>`:''}`;
+}).catch(()=>{document.getElementById('app').innerHTML='<span class="pill bad">NO DATA</span><p>No status.json yet — monitor has not run.</p>'});
+</script>
+</body>
+</html>

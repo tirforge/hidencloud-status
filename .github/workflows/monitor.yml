@@ -1,0 +1,99 @@
+name: HidenCloud Watchdog
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'   # daily 06:00 UTC (plus every run commits -> repo never goes 60d silent)
+
+permissions:
+  contents: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install requests beautifulsoup4
+
+      - name: Probe HidenCloud (read-only)
+        env:
+          HIDEN_COOKIE: ${{ secrets.HIDEN_COOKIE }}
+          STATUS_OUT: public/status.json
+        run: python monitor.py
+
+      - name: Enrich with renew-repo state
+        env:
+          STATUS_PAT: ${{ secrets.STATUS_PAT }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, urllib.request
+          p = 'public/status.json'
+          s = json.load(open(p))
+          pat = os.environ.get('STATUS_PAT', '')
+          rw = {}
+          if pat:
+              try:
+                  req = urllib.request.Request(
+                      'https://api.github.com/tirforge/hidencloud_renew/actions/runs?per_page=3',
+                      headers={'Authorization': f'Bearer {pat}', 'Accept': 'application/vnd.github+json'})
+                  runs = json.load(urllib.request.urlopen(req, timeout=30))['workflow_runs']
+                  r0 = runs[0]
+                  rw = {'conclusion': r0.get('conclusion'), 'created_at': (r0.get('created_at') or '')[:16]}
+                  req2 = urllib.request.Request(
+                      'https://api.github.com/tirforge/hidencloud_renew/contents/.github/workflows/main.yml',
+                      headers={'Authorization': f'Bearer {pat}', 'Accept': 'application/vnd.github.raw'})
+                  yml = urllib.request.urlopen(req2, timeout=30).read().decode()
+                  import re
+                  m = re.search(r"cron:\s*'([^']+)'", yml)
+                  rw['next_cron'] = m.group(1) if m else '?'
+                  # watchdog rule: renew workflow itself must have run OK recently
+                  import datetime
+                  if rw.get('conclusion') != 'success':
+                      s['reasons'] = s.get('reasons', []) + [f"renew workflow last conclusion: {rw.get('conclusion')}"]
+                      s['healthy'] = False
+              except Exception as e:
+                  rw = {'conclusion': f'probe-error:{type(e).__name__}'}
+          else:
+              rw = {'conclusion': 'unknown (STATUS_PAT unset)'}
+          s['renew'] = rw
+          json.dump(s, open(p, 'w'), indent=2)
+          print(json.dumps(s, indent=2))
+          EOF
+
+      - name: Publish status (keeps repo active -> defeats 60-day auto-disable)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add public/status.json
+          git diff --cached --quiet && echo "no change" && exit 0
+          git commit -m "chore: watchdog status [skip ci]"
+          git pull --rebase origin main --autostash || true
+          git push origin HEAD:main
+
+      - name: Telegram alert on trouble
+        if: always()
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          python3 - <<'EOF'
+          import json, os, urllib.request, urllib.parse
+          s = json.load(open('public/status.json'))
+          tok, chat = os.environ.get('TG_BOT_TOKEN', ''), os.environ.get('TG_CHAT_ID', '')
+          if not (tok and chat):
+              print('no TG secrets, skipping alert'); raise SystemExit
+          if s.get('healthy'):
+              print('healthy, no alert'); raise SystemExit
+          msg = '🚨 HidenCloud watchdog: UNHEALTHY\n' + '\n'.join('• ' + r for r in s.get('reasons', [])) + f"\nchecked {s.get('checked_at')}"
+          urllib.request.urlopen(urllib.request.Request(
+              f'https://api.telegram.org/bot{tok}/sendMessage',
+              data=urllib.parse.urlencode({'chat_id': chat, 'text': msg}).encode()), timeout=30)
+          print('alert sent')
+          EOF
